@@ -530,6 +530,9 @@ const App: React.FC = () => {
           <span>&copy; 2024 MONEY-GRID</span>
           <span>SYSTEM: ONLINE</span>
         </div>
+        <div className="flex gap-4">
+          <p>Powered by Ab3d1</p>
+        </div>
       </footer>
     </div>
   );
