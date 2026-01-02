@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { Assignment, AppState } from './types';
 import { 
   Trophy, 
   Coins, 
@@ -18,63 +17,79 @@ import {
   Save,
   Database
 } from 'lucide-react';
+import { db } from './firebase';
+import { 
+  collection, 
+  addDoc, 
+  getDocs, 
+  query, 
+  orderBy, 
+  onSnapshot,
+  deleteDoc,
+  doc,
+  where,
+  writeBatch
+} from 'firebase/firestore';
+import { Assignment, AppState } from './types';
 
 const ADMIN_SECRET = "callme4b3d1";
-const STORAGE_KEY = 'money-number-data';
 const ADMIN_STORAGE_KEY = 'money-number-admin-state';
 
 const App: React.FC = () => {
-  // Load initial state from localStorage
-  const loadFromStorage = (): AppState => {
-    try {
-      const savedData = localStorage.getItem(STORAGE_KEY);
-      const savedAdmin = localStorage.getItem(ADMIN_STORAGE_KEY);
-      
-      if (savedData) {
-        const parsed = JSON.parse(savedData);
-        return {
-          assignments: parsed.assignments || [],
-          currentUser: '',
-          isDarkMode: parsed.isDarkMode ?? true,
-          isAdmin: savedAdmin === 'true',
-          message: null,
-          isGenerating: false,
-        };
-      }
-    } catch (error) {
-      console.error('Failed to load from storage:', error);
-    }
-    
-    return {
-      assignments: [],
-      currentUser: '',
-      isDarkMode: true,
-      isAdmin: false,
-      message: null,
-      isGenerating: false,
-    };
-  };
-
-  const [state, setState] = useState<AppState>(loadFromStorage);
+  const [state, setState] = useState<AppState>({
+    assignments: [],
+    currentUser: '',
+    isDarkMode: true,
+    isAdmin: localStorage.getItem(ADMIN_STORAGE_KEY) === 'true',
+    message: null,
+    isGenerating: false,
+  });
+  
   const [inputName, setInputName] = useState('');
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [adminPassInput, setAdminPassInput] = useState('');
   const [adminError, setAdminError] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Save state to localStorage whenever it changes
+  // Real-time listener for Firebase assignments
   useEffect(() => {
-    const stateToSave = {
-      assignments: state.assignments,
-      isDarkMode: state.isDarkMode,
-    };
+    const assignmentsRef = collection(db, 'assignments');
+    const q = query(assignmentsRef, orderBy('timestamp', 'desc'));
     
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(stateToSave));
-      localStorage.setItem(ADMIN_STORAGE_KEY, state.isAdmin.toString());
-    } catch (error) {
-      console.error('Failed to save to storage:', error);
-    }
-  }, [state.assignments, state.isDarkMode, state.isAdmin]);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const assignmentsData: Assignment[] = [];
+      snapshot.forEach((doc) => {
+        assignmentsData.push({
+          id: doc.id,
+          ...doc.data()
+        } as Assignment);
+      });
+      
+      setState(prev => ({
+        ...prev,
+        assignments: assignmentsData
+      }));
+      
+      setIsLoading(false);
+    }, (error) => {
+      console.error('Error listening to assignments:', error);
+      setState(prev => ({
+        ...prev,
+        message: { 
+          text: 'Error connecting to database. Please refresh.', 
+          type: 'error' 
+        }
+      }));
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Save admin state to localStorage
+  useEffect(() => {
+    localStorage.setItem(ADMIN_STORAGE_KEY, state.isAdmin.toString());
+  }, [state.isAdmin]);
 
   const getGamerFortune = async (name: string, number: number): Promise<string> => {
     const fortunes = [
@@ -109,7 +124,11 @@ const App: React.FC = () => {
 
     const normalizedName = inputName.trim().toLowerCase();
     
-    const existingUserAssignment = state.assignments.find(a => a.name.toLowerCase() === normalizedName);
+    // Check if user already has a number (real-time data from Firebase)
+    const existingUserAssignment = state.assignments.find(
+      a => a.name.toLowerCase() === normalizedName
+    );
+    
     if (existingUserAssignment) {
       setState(prev => ({
         ...prev,
@@ -123,25 +142,49 @@ const App: React.FC = () => {
 
     setState(prev => ({ ...prev, isGenerating: true, message: null }));
 
-    const rolledNumber = Math.floor(Math.random() * 9) + 1;
-
-    const existingNumberOwner = state.assignments.find(a => a.number === rolledNumber);
+    // Generate random number between 1-9
+    let rolledNumber: number;
+    let attempts = 0;
+    const maxAttempts = 50;
     
+    do {
+      rolledNumber = Math.floor(Math.random() * 9) + 1;
+      attempts++;
+      
+      // Safety check to prevent infinite loop
+      if (attempts >= maxAttempts) {
+        setState(prev => ({
+          ...prev,
+          isGenerating: false,
+          message: { 
+            text: 'All numbers (1-9) may be taken. Please check the Arena Log.', 
+            type: 'error' 
+          }
+        }));
+        return;
+      }
+    } while (state.assignments.some(a => a.number === rolledNumber));
+
     await new Promise(resolve => setTimeout(resolve, 800));
 
+    // Double-check in real-time before saving
+    const existingNumberOwner = state.assignments.find(a => a.number === rolledNumber);
+    
     if (existingNumberOwner) {
       setState(prev => ({
         ...prev,
         isGenerating: false,
         message: { 
-          text: `User ${existingNumberOwner.name} already has this money number. Try your luck again!`, 
+          text: `Number ${rolledNumber} was just taken by ${existingNumberOwner.name}. Rolling again...`, 
           type: 'error' 
         }
       }));
+      // Retry automatically
+      setTimeout(() => handleGenerate(), 1000);
       return;
     }
 
-    const fortune = await getGamerFortune(inputName, rolledNumber);
+    const fortune = await getGamerFortune(inputName.trim(), rolledNumber);
 
     const newAssignment: Assignment = {
       name: inputName.trim(),
@@ -150,20 +193,33 @@ const App: React.FC = () => {
       fortune
     };
 
-    setState(prev => ({
-      ...prev,
-      isGenerating: false,
-      assignments: [newAssignment, ...prev.assignments],
-      message: { 
-        text: `Success! You rolled a ${rolledNumber}. Claim your destiny!`, 
-        type: 'success' 
-      }
-    }));
-    setInputName('');
+    try {
+      // Save to Firebase
+      await addDoc(collection(db, 'assignments'), newAssignment);
+      
+      setState(prev => ({
+        ...prev,
+        isGenerating: false,
+        message: { 
+          text: `Success! You rolled a ${rolledNumber}. Claim your destiny!`, 
+          type: 'success' 
+        }
+      }));
+      setInputName('');
+    } catch (error) {
+      console.error('Error saving to Firebase:', error);
+      setState(prev => ({
+        ...prev,
+        isGenerating: false,
+        message: { 
+          text: 'Failed to save to database. Please try again.', 
+          type: 'error' 
+        }
+      }));
+    }
   };
 
-  const verifyAdmin = (e: React.FormEvent) => {
-    e.preventDefault();
+  const verifyAdmin = () => {
     if (adminPassInput === ADMIN_SECRET) {
       setState(prev => ({ ...prev, isAdmin: true }));
       setShowAdminModal(false);
@@ -174,27 +230,45 @@ const App: React.FC = () => {
     }
   };
 
-  const handleResetClick = () => {
+  const handleResetClick = async () => {
     if (!state.isAdmin) {
       setShowAdminModal(true);
       return;
     }
     
-    if (confirm("ADMIN OVERRIDE: Purge all arena assignments from local storage?")) {
-      // Clear both localStorage and state
-      localStorage.removeItem(STORAGE_KEY);
-      localStorage.removeItem(ADMIN_STORAGE_KEY);
-      setState(prev => ({
-        ...prev,
-        assignments: [],
-        isAdmin: false,
-        message: { text: 'Arena purged. All slots now available. Storage cleared.', type: 'neutral' }
-      }));
-      setInputName('');
+    if (confirm("ADMIN OVERRIDE: Purge all arena assignments from Firebase?")) {
+      try {
+        const batch = writeBatch(db);
+        const assignmentsRef = collection(db, 'assignments');
+        const snapshot = await getDocs(assignmentsRef);
+        
+        snapshot.docs.forEach((doc) => {
+          batch.delete(doc.ref);
+        });
+        
+        await batch.commit();
+        
+        setState(prev => ({
+          ...prev,
+          message: { 
+            text: 'Arena purged. All slots now available. Database cleared.', 
+            type: 'neutral' 
+          }
+        }));
+        setInputName('');
+      } catch (error) {
+        console.error('Error resetting database:', error);
+        setState(prev => ({
+          ...prev,
+          message: { 
+            text: 'Failed to reset database. Please try again.', 
+            type: 'error' 
+          }
+        }));
+      }
     }
   };
 
-  // Add export/import functionality
   const exportData = () => {
     const data = {
       assignments: state.assignments,
@@ -214,11 +288,14 @@ const App: React.FC = () => {
     
     setState(prev => ({
       ...prev,
-      message: { text: `Data exported successfully (${state.assignments.length} players)`, type: 'info' }
+      message: { 
+        text: `Data exported successfully (${state.assignments.length} players)`, 
+        type: 'info' 
+      }
     }));
   };
 
-  const importData = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const importData = async (event: React.ChangeEvent<HTMLInputElement>) => {
     if (!state.isAdmin) {
       setShowAdminModal(true);
       return;
@@ -228,7 +305,7 @@ const App: React.FC = () => {
     if (!file) return;
     
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const importedData = JSON.parse(e.target?.result as string);
         
@@ -236,26 +313,57 @@ const App: React.FC = () => {
           throw new Error('Invalid data format');
         }
         
-        if (confirm(`Import ${importedData.assignments.length} player(s)? This will replace current data.`)) {
+        if (confirm(`Import ${importedData.assignments.length} player(s)? This will replace current data in Firebase.`)) {
+          // Clear existing data
+          const batch = writeBatch(db);
+          const assignmentsRef = collection(db, 'assignments');
+          const snapshot = await getDocs(assignmentsRef);
+          
+          snapshot.docs.forEach((doc) => {
+            batch.delete(doc.ref);
+          });
+          
+          await batch.commit();
+          
+          // Add imported data
+          for (const assignment of importedData.assignments) {
+            const { id, ...assignmentData } = assignment;
+            await addDoc(collection(db, 'assignments'), assignmentData);
+          }
+          
           setState(prev => ({
             ...prev,
-            assignments: importedData.assignments,
             message: { 
-              text: `Successfully imported ${importedData.assignments.length} player(s)`, 
+              text: `Successfully imported ${importedData.assignments.length} player(s) to Firebase`, 
               type: 'success' 
             }
           }));
         }
       } catch (error) {
+        console.error('Import error:', error);
         setState(prev => ({
           ...prev,
-          message: { text: 'Failed to import: Invalid file format', type: 'error' }
+          message: { 
+            text: 'Failed to import: Invalid file format or database error', 
+            type: 'error' 
+          }
         }));
       }
     };
     reader.readAsText(file);
-    event.target.value = ''; // Reset input
+    event.target.value = '';
   };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <Zap className="w-12 h-12 text-emerald-400 animate-spin" />
+          <p className="text-sm uppercase tracking-widest">Connecting to Money-Grid...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`min-h-screen ${state.isDarkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'} flex flex-col items-center p-4 transition-all duration-500`}>
@@ -283,12 +391,14 @@ const App: React.FC = () => {
             )}
             <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-1">
               <Database className="w-3 h-3" />
-              <span>Storage: {state.assignments.length} players saved</span>
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span>
+                Firebase: {state.assignments.length} players synced
+              </span>
             </div>
           </div>
         </div>
         <div className="flex gap-2">
-          {/* Export Button */}
           {state.assignments.length > 0 && (
             <button 
               onClick={exportData}
@@ -299,7 +409,6 @@ const App: React.FC = () => {
             </button>
           )}
           
-          {/* Import Button (Admin only) */}
           <label className={`p-2 rounded-full border ${state.isDarkMode ? 'border-slate-800 hover:bg-slate-800' : 'border-slate-200 hover:bg-slate-100'} ${state.isAdmin ? 'text-purple-400 border-purple-400/30 cursor-pointer' : 'opacity-40 cursor-not-allowed'}`} title="Import Data">
             <input 
               type="file" 
@@ -354,8 +463,9 @@ const App: React.FC = () => {
                   type="text" 
                   value={inputName}
                   onChange={(e) => setInputName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleGenerate()}
                   placeholder="e.g. Neo or Alice"
-                  className={`w-full pl-10 pr-4 py-3 rounded-xl border-2 font-bold gamer-glow ${
+                  className={`w-full pl-10 pr-4 py-3 rounded-xl border-2 font-bold ${
                     state.isDarkMode 
                       ? 'bg-slate-950 border-slate-800 focus:border-emerald-500' 
                       : 'bg-slate-50 border-slate-200 focus:border-emerald-500'
@@ -384,11 +494,11 @@ const App: React.FC = () => {
               )}
             </button>
 
-            {/* Message Display */}
             {state.message && (
               <div className={`p-4 rounded-lg flex items-start gap-3 animate-in fade-in slide-in-from-top-2 duration-300 ${
                 state.message.type === 'error' ? 'bg-rose-500/10 border border-rose-500/30 text-rose-400' :
                 state.message.type === 'success' ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' :
+                state.message.type === 'neutral' ? 'bg-slate-500/10 border border-slate-500/30 text-slate-400' :
                 'bg-blue-500/10 border border-blue-500/30 text-blue-400'
               }`}>
                 {state.message.type === 'error' ? <AlertCircle className="w-5 h-5 flex-shrink-0" /> : <ShieldCheck className="w-5 h-5 flex-shrink-0" />}
@@ -408,8 +518,8 @@ const App: React.FC = () => {
               <span className="text-xs px-2 py-1 bg-slate-800 rounded-md font-mono">{state.assignments.length}/9 Slots</span>
               {state.assignments.length > 0 && (
                 <div className="text-[10px] text-emerald-400 flex items-center gap-1">
-                  <Database className="w-3 h-3" />
-                  Saved Locally
+                  <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></span>
+                  Live
                 </div>
               )}
             </div>
@@ -420,12 +530,12 @@ const App: React.FC = () => {
               <div className="h-48 flex flex-col items-center justify-center border-2 border-dashed border-slate-800 rounded-xl opacity-40">
                 <User className="w-8 h-8 mb-2" />
                 <p className="text-sm uppercase tracking-widest italic">No players joined yet</p>
-                <p className="text-xs opacity-50 mt-2">Data will persist across page reloads</p>
+                <p className="text-xs opacity-50 mt-2">Real-time sync across all devices</p>
               </div>
             ) : (
-              state.assignments.map((assignment, idx) => (
+              state.assignments.map((assignment) => (
                 <div 
-                  key={idx} 
+                  key={assignment.id} 
                   className={`p-4 rounded-xl border-l-4 animate-in slide-in-from-right-4 duration-300 flex items-center justify-between ${
                     state.isDarkMode ? 'bg-slate-950 border-emerald-500' : 'bg-slate-50 border-emerald-400 shadow-sm'
                   }`}
@@ -451,12 +561,11 @@ const App: React.FC = () => {
             )}
           </div>
           
-          {/* Storage Info Footer */}
           {state.assignments.length > 0 && (
             <div className="mt-6 pt-4 border-t border-slate-800 text-xs text-slate-400 flex justify-between items-center">
               <div className="flex items-center gap-2">
                 <Database className="w-3 h-3" />
-                <span>Data auto-saved to browser storage</span>
+                <span>Real-time Firebase sync</span>
               </div>
               <button 
                 onClick={() => {
@@ -490,7 +599,7 @@ const App: React.FC = () => {
               </button>
             </div>
             
-            <form onSubmit={verifyAdmin} className="space-y-6">
+            <div className="space-y-6">
               <div>
                 <p className="text-xs uppercase font-bold tracking-widest mb-4 opacity-60">Enter the secret Core Override Code to gain Admin privileges.</p>
                 <input 
@@ -498,8 +607,9 @@ const App: React.FC = () => {
                   autoFocus
                   value={adminPassInput}
                   onChange={(e) => setAdminPassInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && verifyAdmin()}
                   placeholder="********"
-                  className={`w-full px-4 py-3 rounded-xl border-2 font-mono text-center tracking-[0.5em] text-lg gamer-glow ${
+                  className={`w-full px-4 py-3 rounded-xl border-2 font-mono text-center tracking-[0.5em] text-lg ${
                     state.isDarkMode 
                       ? 'bg-slate-950 border-slate-800 focus:border-rose-500' 
                       : 'bg-slate-50 border-slate-200 focus:border-rose-500'
@@ -510,12 +620,12 @@ const App: React.FC = () => {
               </div>
 
               <button 
-                type="submit"
+                onClick={verifyAdmin}
                 className="w-full py-4 bg-rose-500 hover:bg-rose-400 text-slate-950 font-black font-display uppercase tracking-widest rounded-xl shadow-lg shadow-rose-500/20 transition-all active:scale-95"
               >
                 Execute Authentication
               </button>
-            </form>
+            </div>
           </div>
         </div>
       )}
@@ -523,8 +633,8 @@ const App: React.FC = () => {
       {/* Footer Branding */}
       <footer className="mt-auto py-8 opacity-30 text-xs font-mono uppercase tracking-[0.2em] flex flex-col items-center gap-2">
         <div className="flex items-center gap-2">
-          <Database className="w-3 h-3" />
-          <p>Local Storage Active • {state.assignments.length} players persisted</p>
+          <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span>
+          <p>Firebase Realtime • {state.assignments.length} players synced</p>
         </div>
         <div className="flex gap-4">
           <span>&copy; 2026 MONEY-GRID</span>
