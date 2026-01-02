@@ -527,7 +527,7 @@ const App: React.FC = () => {
           <p>Local Storage Active • {state.assignments.length} players persisted</p>
         </div>
         <div className="flex gap-4">
-          <span>&copy; 2024 MONEY-GRID</span>
+          <span>&copy; 2026 MONEY-GRID</span>
           <span>SYSTEM: ONLINE</span>
         </div>
         <div className="flex gap-4">
