@@ -1,16 +1,19 @@
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, addDoc, onSnapshot, deleteDoc, doc, query, orderBy } from 'firebase/firestore';
+import { getFirestore, collection } from 'firebase/firestore';
 
+
+// Your web app's Firebase configuration
 const firebaseConfig = {
-  apiKey: "AIzaSyDcpr6pCVBBauYeQeGllPypgojJ7v4E_f8",
-  authDomain: "ab3d1money.firebaseapp.com",
-  projectId: "ab3d1money",
-  storageBucket: "ab3d1money.firebasestorage.app",
-  messagingSenderId: "727576483918",
-  appId: "1:727576483918:web:af50e060e5b8315358cb1f",
+  apiKey: "AIzaSyANCCNWAk21PYMhg4ioQnonX73zMJfAkDk",
+  authDomain: "ab3d1-cl3m.firebaseapp.com",
+  projectId: "ab3d1-cl3m",
+  storageBucket: "ab3d1-cl3m.firebasestorage.app",
+  messagingSenderId: "382420415276",
+  appId: "1:382420415276:web:0d840f92c428214d793289"
 };
 
+// Initialize Firebase
 const app = initializeApp(firebaseConfig);
-
 export const db = getFirestore(app);
 export const assignmentsCollection = collection(db, 'assignments');
+
