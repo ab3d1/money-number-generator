@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Assignment, AppState } from './types';
 import { 
   Trophy, 
@@ -17,6 +17,10 @@ import {
   X
 } from 'lucide-react';
 
+// Firebase imports
+import { db, assignmentsCollection } from './firebase';
+import { addDoc, onSnapshot, query, orderBy, deleteDoc, doc, where, getDocs } from 'firebase/firestore';
+
 const ADMIN_SECRET = "CYBER_ADMIN_2025";
 
 const App: React.FC = () => {
@@ -33,6 +37,37 @@ const App: React.FC = () => {
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [adminPassInput, setAdminPassInput] = useState('');
   const [adminError, setAdminError] = useState('');
+
+  // 1. Real-time Firestore listener
+  useEffect(() => {
+    const q = query(assignmentsCollection, orderBy('timestamp', 'desc'));
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const assignments: Assignment[] = [];
+      snapshot.forEach((doc) => {
+        assignments.push({ 
+          id: doc.id, 
+          name: doc.data().name,
+          number: doc.data().number,
+          timestamp: doc.data().timestamp,
+          fortune: doc.data().fortune
+        } as Assignment);
+      });
+      
+      setState(prev => ({ ...prev, assignments }));
+    }, (error) => {
+      console.error('Firestore error:', error);
+      setState(prev => ({
+        ...prev,
+        message: { 
+          text: 'Connection to database lost. Some features may not work.', 
+          type: 'error' 
+        }
+      }));
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const getGamerFortune = async (name: string, number: number): Promise<string> => {
     // Local fortunes - no API needed
@@ -68,7 +103,11 @@ const App: React.FC = () => {
 
     const normalizedName = inputName.trim().toLowerCase();
     
-    const existingUserAssignment = state.assignments.find(a => a.name.toLowerCase() === normalizedName);
+    // Check if user already exists in Firestore data
+    const existingUserAssignment = state.assignments.find(a => 
+      a.name.toLowerCase() === normalizedName
+    );
+    
     if (existingUserAssignment) {
       setState(prev => ({
         ...prev,
@@ -84,8 +123,10 @@ const App: React.FC = () => {
 
     const rolledNumber = Math.floor(Math.random() * 9) + 1;
 
+    // Check if number already exists in Firestore data
     const existingNumberOwner = state.assignments.find(a => a.number === rolledNumber);
     
+    // Simulate loading delay
     await new Promise(resolve => setTimeout(resolve, 800));
 
     if (existingNumberOwner) {
@@ -100,24 +141,43 @@ const App: React.FC = () => {
       return;
     }
 
+    // Get fortune
     const fortune = await getGamerFortune(inputName, rolledNumber);
 
-    const newAssignment: Assignment = {
+    const newAssignment = {
       name: inputName.trim(),
       number: rolledNumber,
       timestamp: Date.now(),
       fortune
     };
 
-    setState(prev => ({
-      ...prev,
-      isGenerating: false,
-      assignments: [newAssignment, ...prev.assignments],
-      message: { 
-        text: `Success! You rolled a ${rolledNumber}. Claim your destiny!`, 
-        type: 'success' 
-      }
-    }));
+    try {
+      // 2. Save to Firestore
+      await addDoc(assignmentsCollection, newAssignment);
+      
+      setState(prev => ({
+        ...prev,
+        isGenerating: false,
+        message: { 
+          text: `Success! You rolled a ${rolledNumber}. Claim your destiny!`, 
+          type: 'success' 
+        }
+      }));
+      
+      // Clear input after successful save
+      setInputName('');
+      
+    } catch (error) {
+      console.error('Error saving to database:', error);
+      setState(prev => ({
+        ...prev,
+        isGenerating: false,
+        message: { 
+          text: 'Failed to save your number. Please try again.', 
+          type: 'error' 
+        }
+      }));
+    }
   };
 
   const verifyAdmin = (e: React.FormEvent) => {
@@ -132,19 +192,36 @@ const App: React.FC = () => {
     }
   };
 
-  const handleResetClick = () => {
+  const handleResetClick = async () => {
     if (!state.isAdmin) {
       setShowAdminModal(true);
       return;
     }
     
     if (confirm("ADMIN OVERRIDE: Purge all arena assignments?")) {
-      setState(prev => ({
-        ...prev,
-        assignments: [],
-        message: { text: 'Arena purged. All slots now available.', type: 'neutral' }
-      }));
-      setInputName('');
+      try {
+        // 3. Delete all documents from Firestore
+        const deletePromises = state.assignments.map(assignment => {
+          if (assignment.id) {
+            return deleteDoc(doc(db, 'assignments', assignment.id));
+          }
+          return Promise.resolve();
+        });
+        
+        await Promise.all(deletePromises);
+        
+        setState(prev => ({
+          ...prev,
+          message: { text: 'Arena purged. All slots now available.', type: 'neutral' }
+        }));
+        
+      } catch (error) {
+        console.error('Error resetting arena:', error);
+        setState(prev => ({
+          ...prev,
+          message: { text: 'Failed to reset arena. Please try again.', type: 'error' }
+        }));
+      }
     }
   };
 
@@ -167,11 +244,16 @@ const App: React.FC = () => {
             <h1 className="text-2xl md:text-4xl font-black font-display tracking-tighter uppercase italic">
               Get Your <span className="text-emerald-400">Money</span> Number
             </h1>
-            {state.isAdmin && (
-              <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-bold uppercase tracking-widest mt-1">
-                <Unlock className="w-3 h-3" /> System Admin Active
+            <div className="flex items-center gap-2 mt-1">
+              {state.isAdmin && (
+                <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-bold uppercase tracking-widest">
+                  <Unlock className="w-3 h-3" /> System Admin Active
+                </div>
+              )}
+              <div className="flex items-center gap-1 text-[10px] text-blue-400 font-bold uppercase tracking-widest">
+                <ShieldCheck className="w-3 h-3" /> Live Sync Active
               </div>
-            )}
+            </div>
           </div>
         </div>
         <div className="flex gap-2">
@@ -234,6 +316,8 @@ const App: React.FC = () => {
               className={`w-full py-4 rounded-xl font-black font-display uppercase tracking-widest text-lg transition-all transform active:scale-95 flex items-center justify-center gap-2 shadow-xl ${
                 !inputName.trim()
                   ? 'bg-slate-800 text-slate-500 cursor-not-allowed grayscale'
+                  : state.isGenerating
+                  ? 'bg-emerald-600 text-slate-950 shadow-emerald-500/20'
                   : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400 shadow-emerald-500/20'
               }`}
             >
@@ -253,9 +337,12 @@ const App: React.FC = () => {
               <div className={`p-4 rounded-lg flex items-start gap-3 animate-in fade-in slide-in-from-top-2 duration-300 ${
                 state.message.type === 'error' ? 'bg-rose-500/10 border border-rose-500/30 text-rose-400' :
                 state.message.type === 'success' ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' :
-                'bg-blue-500/10 border border-blue-500/30 text-blue-400'
+                state.message.type === 'info' ? 'bg-blue-500/10 border border-blue-500/30 text-blue-400' :
+                'bg-slate-500/10 border border-slate-500/30 text-slate-400'
               }`}>
-                {state.message.type === 'error' ? <AlertCircle className="w-5 h-5 flex-shrink-0" /> : <ShieldCheck className="w-5 h-5 flex-shrink-0" />}
+                {state.message.type === 'error' ? <AlertCircle className="w-5 h-5 flex-shrink-0" /> : 
+                 state.message.type === 'success' ? <ShieldCheck className="w-5 h-5 flex-shrink-0" /> :
+                 <ShieldCheck className="w-5 h-5 flex-shrink-0" />}
                 <p className="text-sm font-semibold">{state.message.text}</p>
               </div>
             )}
@@ -268,7 +355,10 @@ const App: React.FC = () => {
             <h2 className="text-xl font-bold font-display uppercase tracking-widest flex items-center gap-2">
               <Coins className="text-yellow-400 w-5 h-5" /> Arena Log
             </h2>
-            <span className="text-xs px-2 py-1 bg-slate-800 rounded-md font-mono">{state.assignments.length}/9 Slots</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs px-2 py-1 bg-slate-800 rounded-md font-mono">{state.assignments.length}/9 Slots</span>
+              <span className="text-xs px-2 py-1 bg-emerald-500/20 text-emerald-400 rounded-md font-mono animate-pulse">LIVE</span>
+            </div>
           </div>
 
           <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
@@ -276,11 +366,12 @@ const App: React.FC = () => {
               <div className="h-48 flex flex-col items-center justify-center border-2 border-dashed border-slate-800 rounded-xl opacity-40">
                 <User className="w-8 h-8 mb-2" />
                 <p className="text-sm uppercase tracking-widest italic">No players joined yet</p>
+                <p className="text-[10px] text-slate-500 mt-2">Be the first to claim your number!</p>
               </div>
             ) : (
               state.assignments.map((assignment, idx) => (
                 <div 
-                  key={idx} 
+                  key={assignment.id || idx} 
                   className={`p-4 rounded-xl border-l-4 animate-in slide-in-from-right-4 duration-300 flex items-center justify-between ${
                     state.isDarkMode ? 'bg-slate-950 border-emerald-500' : 'bg-slate-50 border-emerald-400 shadow-sm'
                   }`}
@@ -358,6 +449,7 @@ const App: React.FC = () => {
         <div className="flex gap-4">
           <span>&copy; 2026 MONEY-GRID</span>
           <span>SYSTEM: ONLINE</span>
+          <span className="text-emerald-400">FIREBASE SYNC</span>
         </div>
       </footer>
 
