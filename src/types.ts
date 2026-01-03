@@ -1,5 +1,5 @@
 export interface Assignment {
-  id?: string;  // Added for Firebase document ID
+  id?: string; // Add Firestore document ID
   name: string;
   number: number;
   timestamp: number;
