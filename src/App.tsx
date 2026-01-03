@@ -70,6 +70,13 @@ const App: React.FC = () => {
           });
         });
         
+        // ✅ Validate data integrity - no duplicate numbers
+        const numbers = assignments.map(a => a.number);
+        const uniqueNumbers = new Set(numbers);
+        if (numbers.length !== uniqueNumbers.size) {
+          console.error('❌ DATABASE CORRUPTION: Duplicate numbers detected!', assignments);
+        }
+        
         setState(prev => ({ 
           ...prev, 
           assignments 
@@ -123,7 +130,7 @@ const App: React.FC = () => {
     if (!inputName.trim()) {
       setState(prev => ({
         ...prev,
-        message: { text: 'You must enter a name to proceed, Player 1.', type: 'error' }
+        message: { text: '❌ You must enter a name to proceed, Player 1.', type: 'error' }
       }));
       return;
     }
@@ -139,7 +146,7 @@ const App: React.FC = () => {
       setState(prev => ({
         ...prev,
         message: { 
-          text: `You already have number ${existingUserAssignment.number} assigned.`, 
+          text: `⚠️ You already have number ${existingUserAssignment.number} assigned.`, 
           type: 'info' 
         }
       }));
@@ -147,48 +154,66 @@ const App: React.FC = () => {
       return;
     }
 
-    setState(prev => ({ ...prev, isGenerating: true, message: null }));
-
-    // Check if all numbers (1-9) are taken
+    // ✅ CRITICAL: Check if all numbers 1-9 are already taken
     if (state.assignments.length >= 9) {
       setState(prev => ({
         ...prev,
-        isGenerating: false,
         message: { 
-          text: 'All numbers (1-9) are taken. Admin must reset the arena.', 
+          text: '❌ All numbers (1-9) are already taken! Admin must reset the arena.', 
           type: 'error' 
         }
       }));
       return;
     }
 
-    // Generate random number between 1-9 that's not taken
-    let rolledNumber: number;
-    let attempts = 0;
-    const maxAttempts = 20; // Reasonable limit
+    // ✅ Validate data integrity - check for duplicates in current state
+    const duplicateCheck = state.assignments.reduce((acc, curr) => {
+      acc[curr.number] = (acc[curr.number] || 0) + 1;
+      return acc;
+    }, {} as Record<number, number>);
     
-    do {
-      rolledNumber = Math.floor(Math.random() * 9) + 1;
-      attempts++;
-      
-      // Safety check to prevent infinite loop
-      if (attempts >= maxAttempts) {
-        setState(prev => ({
-          ...prev,
-          isGenerating: false,
-          message: { 
-            text: 'Cannot find available number. Please try again.', 
-            type: 'error' 
-          }
-        }));
-        return;
-      }
-    } while (state.assignments.some(a => a.number === rolledNumber));
+    const duplicates = Object.entries(duplicateCheck).filter(([_, count]) => count > 1);
+    if (duplicates.length > 0) {
+      console.error('❌ Duplicate numbers detected:', duplicates);
+      setState(prev => ({
+        ...prev,
+        message: { 
+          text: '⚠️ System error: Duplicate numbers detected. Please contact admin.', 
+          type: 'error' 
+        }
+      }));
+      return;
+    }
+
+    setState(prev => ({ ...prev, isGenerating: true, message: null }));
+
+    // ✅ Get ALL currently taken numbers
+    const takenNumbers = state.assignments.map(a => a.number);
+    
+    // ✅ Create array of available numbers (1-9 minus taken ones)
+    const allNumbers = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    const availableNumbers = allNumbers.filter(num => !takenNumbers.includes(num));
+    
+    if (availableNumbers.length === 0) {
+      setState(prev => ({
+        ...prev,
+        isGenerating: false,
+        message: { 
+          text: '❌ No numbers available. System error.', 
+          type: 'error' 
+        }
+      }));
+      return;
+    }
+    
+    // ✅ Pick random from available numbers only
+    const randomIndex = Math.floor(Math.random() * availableNumbers.length);
+    const rolledNumber = availableNumbers[randomIndex];
 
     // Small delay for effect
     await new Promise(resolve => setTimeout(resolve, 800));
 
-    // Final check in case another user took the number during the delay
+    // ✅ Final check (in case Firestore updated during delay)
     const existingNumberOwner = state.assignments.find(a => a.number === rolledNumber);
     
     if (existingNumberOwner) {
@@ -196,7 +221,7 @@ const App: React.FC = () => {
         ...prev,
         isGenerating: false,
         message: { 
-          text: `Number ${rolledNumber} was just taken by ${existingNumberOwner.name}. Try again!`, 
+          text: `❌ Number ${rolledNumber} was just taken by ${existingNumberOwner.name}. Try again!`, 
           type: 'error' 
         }
       }));
@@ -213,29 +238,28 @@ const App: React.FC = () => {
     };
 
     try {
-      console.log('Saving to Firestore:', newAssignment);
+      console.log('✅ Saving to Firestore:', newAssignment);
       await addDoc(assignmentsCollection, newAssignment);
       
-      // SUCCESS - update UI and clear input
+      // SUCCESS
       setState(prev => ({
         ...prev,
         isGenerating: false,
         message: { 
-          text: `Success! Number ${rolledNumber} assigned to ${inputName.trim()}.`, 
+          text: `✅ Success! Number ${rolledNumber} assigned to ${inputName.trim()}.`, 
           type: 'success' 
         }
       }));
       
-      // CRITICAL: Clear input field so button resets
       setInputName('');
       
     } catch (error) {
-      console.error('Error saving to Firebase:', error);
+      console.error('❌ Error saving to Firebase:', error);
       setState(prev => ({
         ...prev,
         isGenerating: false,
         message: { 
-          text: 'Failed to save to database. Please try again.', 
+          text: '❌ Failed to save to database. Please try again.', 
           type: 'error' 
         }
       }));
@@ -250,7 +274,7 @@ const App: React.FC = () => {
       setAdminPassInput('');
       setAdminError('');
     } else {
-      setAdminError('ACCESS DENIED: INVALID CORE OVERRIDE CODE');
+      setAdminError('❌ ACCESS DENIED: INVALID CORE OVERRIDE CODE');
     }
   };
 
@@ -260,7 +284,7 @@ const App: React.FC = () => {
       return;
     }
     
-    if (confirm("ADMIN OVERRIDE: Purge all arena assignments from Firebase?")) {
+    if (confirm("⚠️ ADMIN OVERRIDE: Purge all arena assignments from Firebase?")) {
       try {
         const batch = writeBatch(db);
         const assignmentsRef = assignmentsCollection;
@@ -270,7 +294,7 @@ const App: React.FC = () => {
           setState(prev => ({
             ...prev,
             message: { 
-              text: 'Database is already empty.', 
+              text: 'ℹ️ Database is already empty.', 
               type: 'info' 
             }
           }));
@@ -286,17 +310,17 @@ const App: React.FC = () => {
         setState(prev => ({
           ...prev,
           message: { 
-            text: `Arena purged. ${snapshot.size} assignment(s) cleared from database.`, 
+            text: `✅ Arena purged. ${snapshot.size} assignment(s) cleared from database.`, 
             type: 'neutral' 
           }
         }));
         setInputName('');
       } catch (error) {
-        console.error('Error resetting database:', error);
+        console.error('❌ Error resetting database:', error);
         setState(prev => ({
           ...prev,
           message: { 
-            text: 'Failed to reset database. Please try again.', 
+            text: '❌ Failed to reset database. Please try again.', 
             type: 'error' 
           }
         }));
@@ -309,7 +333,7 @@ const App: React.FC = () => {
       setState(prev => ({
         ...prev,
         message: { 
-          text: 'No data to export.', 
+          text: 'ℹ️ No data to export.', 
           type: 'info' 
         }
       }));
@@ -340,7 +364,7 @@ const App: React.FC = () => {
     setState(prev => ({
       ...prev,
       message: { 
-        text: `Data exported (${state.assignments.length} players)`, 
+        text: `✅ Data exported (${state.assignments.length} players)`, 
         type: 'info' 
       }
     }));
@@ -364,7 +388,24 @@ const App: React.FC = () => {
           throw new Error('Invalid data format');
         }
         
-        if (confirm(`Import ${importedData.assignments.length} player(s)? This will replace current data in Firebase.`)) {
+        // ✅ Check for duplicate numbers in imported data
+        const importedNumbers = importedData.assignments.map((a: any) => a.number);
+        const duplicateNumbers = importedNumbers.filter((num: number, index: number) => 
+          importedNumbers.indexOf(num) !== index
+        );
+        
+        if (duplicateNumbers.length > 0) {
+          setState(prev => ({
+            ...prev,
+            message: { 
+              text: `❌ Import failed: Contains duplicate numbers (${duplicateNumbers.join(', ')})`, 
+              type: 'error' 
+            }
+          }));
+          return;
+        }
+        
+        if (confirm(`⚠️ Import ${importedData.assignments.length} player(s)? This will replace current data in Firebase.`)) {
           // Clear existing data first
           const batch = writeBatch(db);
           const snapshot = await getDocs(assignmentsCollection);
@@ -385,17 +426,17 @@ const App: React.FC = () => {
           setState(prev => ({
             ...prev,
             message: { 
-              text: `Imported ${importedData.assignments.length} player(s) successfully!`, 
+              text: `✅ Imported ${importedData.assignments.length} player(s) successfully!`, 
               type: 'success' 
             }
           }));
         }
       } catch (error) {
-        console.error('Import error:', error);
+        console.error('❌ Import error:', error);
         setState(prev => ({
           ...prev,
           message: { 
-            text: 'Failed to import: Invalid file format', 
+            text: '❌ Failed to import: Invalid file format', 
             type: 'error' 
           }
         }));
@@ -403,6 +444,12 @@ const App: React.FC = () => {
     };
     reader.readAsText(file);
     event.target.value = '';
+  };
+
+  // Calculate available numbers for display
+  const getAvailableNumbers = () => {
+    const takenNumbers = state.assignments.map(a => a.number);
+    return [1, 2, 3, 4, 5, 6, 7, 8, 9].filter(num => !takenNumbers.includes(num));
   };
 
   if (isLoading) {
@@ -445,7 +492,7 @@ const App: React.FC = () => {
               <div className="flex items-center gap-1 text-[10px] text-blue-400 font-bold uppercase tracking-widest">
                 <Database className="w-3 h-3" />
                 <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse mr-1"></span>
-                {state.assignments.length} player(s) synced
+                {state.assignments.length} player(s) • {getAvailableNumbers().length} number(s) available
               </div>
             </div>
           </div>
@@ -572,7 +619,12 @@ const App: React.FC = () => {
               <Coins className="text-yellow-400 w-5 h-5" /> Arena Log
             </h2>
             <div className="flex items-center gap-3">
-              <span className="text-xs px-2 py-1 bg-slate-800 rounded-md font-mono">{state.assignments.length}/9 Slots</span>
+              <span className="text-xs px-2 py-1 bg-slate-800 rounded-md font-mono">
+                {state.assignments.length}/9 Slots 
+                <span className={`ml-1 ${getAvailableNumbers().length === 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                  ({getAvailableNumbers().length} available)
+                </span>
+              </span>
               {state.assignments.length > 0 && (
                 <div className="text-[10px] text-emerald-400 flex items-center gap-1">
                   <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></span>
@@ -616,6 +668,41 @@ const App: React.FC = () => {
                 </div>
               ))
             )}
+          </div>
+          
+          {/* Number Availability Display */}
+          <div className="mt-6 pt-4 border-t border-slate-800">
+            <h3 className="text-sm uppercase font-bold tracking-widest mb-3 flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-400" /> Number Availability
+            </h3>
+            <div className="grid grid-cols-9 gap-2">
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => {
+                const isTaken = state.assignments.some(a => a.number === num);
+                const takenBy = state.assignments.find(a => a.number === num);
+                
+                return (
+                  <div 
+                    key={num}
+                    className={`h-10 rounded-lg flex flex-col items-center justify-center text-xs transition-all ${
+                      isTaken 
+                        ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' 
+                        : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                    }`}
+                    title={isTaken ? `Taken by ${takenBy?.name}` : 'Available'}
+                  >
+                    <span className="font-black text-sm">{num}</span>
+                    <span className={`text-[8px] ${isTaken ? 'text-rose-400' : 'text-emerald-400'}`}>
+                      {isTaken ? '✗' : '✓'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-xs text-slate-400 mt-2 text-center">
+              {getAvailableNumbers().length === 0 
+                ? '❌ All numbers 1-9 are taken!' 
+                : `${getAvailableNumbers().length} numbers still available`}
+            </p>
           </div>
           
           {state.assignments.length > 0 && (
@@ -690,7 +777,7 @@ const App: React.FC = () => {
       <footer className="mt-auto py-8 opacity-30 text-xs font-mono uppercase tracking-[0.2em] flex flex-col items-center gap-2">
         <div className="flex items-center gap-2">
           <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span>
-          <p>Firebase Realtime • {state.assignments.length} players synced</p>
+          <p>Firebase Realtime • {state.assignments.length} players synced • {getAvailableNumbers().length} numbers available</p>
         </div>
         <div className="flex gap-4">
           <span>&copy; 2026 MONEY-GRID</span>
